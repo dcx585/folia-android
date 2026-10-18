@@ -1,0 +1,101 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0 platform-tools'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build web bundle (capacitor target)
+        run: npm run build:capacitor
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Remove hardcoded JDK path from gradle.properties
+        run: |
+          # 上游的 gradle.properties 里硬编码了构建机的 Windows JDK 路径，
+          # 在 CI 上必然失败，这里把它去掉，改用 setup-java 提供的 JDK。
+          sed -i '/^org\.gradle\.java\.home/d' android/gradle.properties
+          grep -c 'java.home' android/gradle.properties || true
+
+      - name: Configure SDK path
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Compute version tag
+        id: ver
+        shell: bash
+        run: |
+          # 版本号取 package.json，构建号用 run_number，方便区分每一次迭代
+          BASE=$(node -p "require('./package.json').version")
+          TAG="v${BASE}-build.${{ github.run_number }}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Building $TAG"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: folia-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      - name: Publish release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Folia Android ${{ env.TAG }}
+          prerelease: true
+          body: |
+            Debug 构建，可直接覆盖安装。
+
+            本次包含的性能诊断埋点：
+            - QQ 音乐库启动加载分段计时（likedIds / playlists / saveSnapshot）
+            - 诊断报告新增 `library startup measures` 一节
+
+            安装后在 设置 → 复制诊断数据，把 `library startup measures` 那段发回来。
+          files: android/app/build/outputs/apk/debug/*.apk
