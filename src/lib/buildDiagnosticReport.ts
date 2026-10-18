@@ -585,6 +585,17 @@ const readVideoLayerLines = async (): Promise<string[]> => {
     return lines;
 };
 
+const readQqLibraryMeasures = (): string[] => {
+    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
+        return ['  (performance API unavailable)'];
+    }
+    const measures = performance.getEntriesByType('measure')
+        .filter(entry => entry.name.startsWith('qqlib:'))
+        .sort((a, b) => a.startTime - b.startTime);
+    if (!measures.length) return ['  (no library measures recorded)'];
+    return measures.map(entry => `  ${entry.name.padEnd(28)} ${entry.duration.toFixed(1)}ms @${(entry.startTime / 1000).toFixed(2)}s`);
+};
+
 export const buildDiagnosticReport = async (): Promise<string> => {
     const appVersion = typeof __APP_VERSION__ === 'undefined' ? 'unknown' : __APP_VERSION__;
     const heartbeats = await readDiagnosticsHeartbeats();
@@ -653,6 +664,9 @@ export const buildDiagnosticReport = async (): Promise<string> => {
 
     const libraryLines = getLibraryTraceLines();
     lines.push(...(libraryLines.length ? libraryLines.map(line => `  ${line}`) : ['  (none)']));
+
+    lines.push('', 'library startup measures:');
+    lines.push(...readQqLibraryMeasures());
 
     const localLibraryLines = getLocalLibraryDiagnosticLines();
     lines.push('', 'local library trace:');

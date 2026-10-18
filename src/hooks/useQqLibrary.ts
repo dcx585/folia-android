@@ -21,6 +21,30 @@ import {
 
 const PAGE_SIZE = 50;
 
+/**
+ * 启动期耗时采样。卡顿报告显示首屏有一帧阻塞接近 2 秒，归因落在主包脚本上，
+ * 而启动阶段最容易串行阻塞的就是这里：喜欢歌曲 + 歌单列表全量翻页。
+ * 用 performance.mark/measure 把每一段标出来，诊断报告里就能看到到底卡在哪一段。
+ */
+const timed = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
+    if (typeof performance === 'undefined' || typeof performance.mark !== 'function') {
+        return run();
+    }
+    const start = `qqlib:${label}:start`;
+    const end = `qqlib:${label}:end`;
+    performance.mark(start);
+    try {
+        return await run();
+    } finally {
+        performance.mark(end);
+        try {
+            performance.measure(`qqlib:${label}`, start, end);
+        } catch {
+            // 测量失败不影响主流程。
+        }
+    }
+};
+
 export type QqLibraryRefreshDeps = {
     availability: ProviderAvailability;
     capabilities: ProviderCapabilities;
@@ -76,7 +100,7 @@ export const refreshQqLibraryAccount = async ({
     try {
         if (capabilities.likes) {
             try {
-                likedSongIds = await loadLikedSongIds(user.id);
+                likedSongIds = await timed('likedIds', () => loadLikedSongIds(user.id));
             } catch (error) {
                 console.warn('[QQLibrary] liked-songs:error', {
                     name: error instanceof Error ? error.name : 'Error',
@@ -85,21 +109,23 @@ export const refreshQqLibraryAccount = async ({
             }
         }
         if (capabilities.userLibrary) {
-            let offset = 0;
-            let hasMore = true;
-            while (hasMore && offset < 1000) {
-                const page = await loadPlaylistPage(user.id, PAGE_SIZE, offset);
-                collections.push(...page.items);
-                console.info('[QQLibrary] playlists:page', {
-                    offset,
-                    itemCount: page.items.length,
-                    hasMore: page.hasMore,
-                });
-                hasMore = page.hasMore && page.nextOffset > offset;
-                offset = page.nextOffset;
-            }
+            await timed('playlists', async () => {
+                let offset = 0;
+                let hasMore = true;
+                while (hasMore && offset < 1000) {
+                    const page = await loadPlaylistPage(user.id, PAGE_SIZE, offset);
+                    collections.push(...page.items);
+                    console.info('[QQLibrary] playlists:page', {
+                        offset,
+                        itemCount: page.items.length,
+                        hasMore: page.hasMore,
+                    });
+                    hasMore = page.hasMore && page.nextOffset > offset;
+                    offset = page.nextOffset;
+                }
+            });
         }
-        const savedAt = await saveSnapshot(user, collections, likedSongIds);
+        const savedAt = await timed('saveSnapshot', () => saveSnapshot(user, collections, likedSongIds));
         updateAccount({
             status: 'authenticated',
             user,
